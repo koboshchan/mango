@@ -19,12 +19,18 @@
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-        body { background-color: var(--bg-dark); color: var(--text-main); height: 100vh; display: flex; overflow: hidden; }
+        body {
+            background-color: var(--bg-dark); color: var(--text-main); display: flex; overflow: hidden;
+            height: 100vh; height: 100dvh; /* 100dvh accounts for Safari's collapsing toolbar; 100vh is the fallback */
+        }
+        /* Safety net so Safari never auto-zooms on input focus, regardless of root font-size. */
+        input { font-size: max(1rem, 16px); }
 
         /* Fullscreen Gate / Auth Screens */
         .auth-container {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 1000;
+            padding-bottom: env(safe-area-inset-bottom);
         }
         .auth-card {
             background: #2b2d31; padding: 30px; border-radius: 8px; width: 100%; max-width: 420px;
@@ -91,10 +97,38 @@
         .message.invalid-sig .message-user::after { content: " (INVALID SIGNATURE)"; color: var(--danger); font-weight: normal; font-size: 0.75rem; }
         .message.pending .message-text { opacity: 0.6; }
 
-        .chat-input-area { padding: 20px; }
+        .chat-input-area { padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
         .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
         .chat-input { width: 100%; background: transparent; border: none; color: #fff; font-size: 1rem; }
         .chat-input:focus { outline: none; }
+
+        /* Mobile/tablet: the sidebar becomes an off-canvas drawer instead of a
+           permanent 240px column, opened via a hamburger button in the chat
+           header. Hidden outside this breakpoint so desktop is unchanged. */
+        #menu-toggle-btn {
+            display: none; width: 44px; height: 44px; align-items: center; justify-content: center;
+            background: none; border: none; color: #fff; font-size: 1.3rem; cursor: pointer; margin-right: 8px;
+        }
+        .sidebar-backdrop { display: none; }
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed; top: 0; left: 0; height: 100%; width: min(85vw, 300px);
+                z-index: 500; transform: translateX(-100%); transition: transform 0.2s ease;
+            }
+            .sidebar.open { transform: translateX(0); box-shadow: 4px 0 16px rgba(0,0,0,0.4); }
+            .chat-area { width: 100%; }
+            .sidebar-backdrop.open {
+                display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 400;
+            }
+            #menu-toggle-btn { display: inline-flex; }
+            .chat-header { display: flex; align-items: center; }
+
+            /* Larger tap targets - desktop's tighter density stays untouched outside this breakpoint. */
+            .btn, .logout-btn, .channel, .rooms-list li, .sidebar-header {
+                min-height: 44px; display: flex; align-items: center;
+            }
+            .btn { justify-content: center; }
+        }
     </style>
 </head>
 <body>
@@ -156,7 +190,8 @@
 
     <!-- STEP 3: MAIN CHAT INTERFACE -->
     <div id="app-container">
-        <div class="sidebar">
+        <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+        <div class="sidebar" id="chat-sidebar">
             <div class="sidebar-header" id="back-to-rooms">
                 <span>Mango</span>
                 <span style="font-size:0.75rem; color: var(--text-muted);">&larr; rooms</span>
@@ -172,7 +207,10 @@
             </div>
         </div>
         <div class="chat-area">
-            <div class="chat-header" id="chat-header"># room</div>
+            <div class="chat-header">
+                <button id="menu-toggle-btn" aria-label="Toggle channel list">&#9776;</button>
+                <span id="chat-header-title"># room</span>
+            </div>
             <div id="messages-box" class="messages-box"></div>
             <div class="chat-input-area">
                 <div class="chat-input-wrapper">

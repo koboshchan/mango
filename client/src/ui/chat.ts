@@ -70,7 +70,7 @@ export interface ChatController {
 }
 
 export function wireChatScreen(): ChatController {
-  const chatHeader = el<HTMLElement>('chat-header');
+  const chatHeaderTitle = el<HTMLElement>('chat-header-title');
   const messagesBox = el<HTMLElement>('messages-box');
   const messageInput = el<HTMLInputElement>('message-input');
   const backBtn = el<HTMLElement>('back-to-rooms');
@@ -78,6 +78,23 @@ export function wireChatScreen(): ChatController {
   const userDisplay = el<HTMLElement>('logged-user-display');
   const logoutBtn = el<HTMLButtonElement>('chat-logout-btn');
   const fpEl = el<HTMLElement>('identity-fingerprint');
+  const sidebar = el<HTMLElement>('chat-sidebar');
+  const sidebarBackdrop = el<HTMLElement>('sidebar-backdrop');
+  const menuToggleBtn = el<HTMLButtonElement>('menu-toggle-btn');
+
+  // Off-canvas sidebar drawer, only actually visible below the 768px
+  // breakpoint (see index.html's @media block) - on desktop the sidebar is
+  // always a static column and these classes are simply inert.
+  function openDrawer(): void {
+    sidebar.classList.add('open');
+    sidebarBackdrop.classList.add('open');
+  }
+  function closeDrawer(): void {
+    sidebar.classList.remove('open');
+    sidebarBackdrop.classList.remove('open');
+  }
+  menuToggleBtn.addEventListener('click', openDrawer);
+  sidebarBackdrop.addEventListener('click', closeDrawer);
 
   let currentAesKey: CryptoKey | null = null;
 
@@ -291,9 +308,10 @@ export function wireChatScreen(): ChatController {
   async function openRoom(room: StoredRoom): Promise<void> {
     state.currentRoom = room;
     currentAesKey = await importAesKey(room.h1);
-    chatHeader.textContent = `# ${room.name}`;
+    chatHeaderTitle.textContent = `# ${room.name}`;
     messagesBox.innerHTML = '';
     userDisplay.textContent = state.username ?? '';
+    closeDrawer(); // picking a room (from the drawer or the channel list) should reveal the chat
     // The identity panel lives in this screen's sidebar; state.identity is
     // only populated once login/registration completes (see
     // ui/auth.ts and main.ts), which happens after this controller was
@@ -391,6 +409,7 @@ export function wireChatScreen(): ChatController {
 
   backBtn.addEventListener('click', () => {
     state.currentRoom = null;
+    closeDrawer(); // reset for the next time this screen is shown
     showRoomsScreen();
     window.dispatchEvent(new CustomEvent('mango:refresh-rooms'));
   });
