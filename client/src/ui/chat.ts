@@ -385,8 +385,11 @@ export function wireChatScreen(): ChatController {
     }
   }
 
-  messageInput.addEventListener('keypress', (ev) => {
-    if (ev.key === 'Enter') void handleSend();
+  messageInput.addEventListener('keydown', (ev) => {
+    // keypress is deprecated (and not dispatched by some automation tools);
+    // isComposing guards against submitting mid-IME-composition, where Enter
+    // confirms a character choice rather than sending the message.
+    if (ev.key === 'Enter' && !ev.isComposing) void handleSend();
   });
 
   async function handleSend(): Promise<void> {
