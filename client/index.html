@@ -100,11 +100,20 @@
            username, tighter spacing than the default .messages-box gap. */
         .message.grouped { margin-top: -9px; }
         .message.grouped .message-user { display: none; }
+        .message-image { display: block; width: auto; height: auto; max-width: min(100%, 360px); max-height: 360px; border-radius: 8px; margin-top: 2px; }
+        /* Drag-and-drop affordance while a file is dragged over the message list. */
+        .messages-box.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; background: rgba(88,101,242,0.06); }
 
         .chat-input-area { padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
-        .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
+        .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; align-items: center; gap: 8px; }
         .chat-input { width: 100%; background: transparent; border: none; color: #fff; font-size: 1rem; }
         .chat-input:focus { outline: none; }
+        #attach-image-btn {
+            flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+            background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.2rem; border-radius: 4px;
+        }
+        #attach-image-btn:hover { color: #fff; background: rgba(255,255,255,0.08); }
+        #chat-image-progress.pow-progress { margin: 0 20px 10px; }
 
         /* Mobile/tablet: the sidebar becomes an off-canvas drawer instead of a
            permanent 240px column, opened via a hamburger button in the chat
@@ -126,6 +135,7 @@
             }
             #menu-toggle-btn { display: inline-flex; }
             .chat-header { display: flex; align-items: center; }
+            #attach-image-btn { width: 44px; height: 44px; }
 
             /* Larger tap targets - desktop's tighter density stays untouched outside this breakpoint. */
             .btn, .logout-btn, .channel, .rooms-list li, .sidebar-header {
@@ -216,8 +226,14 @@
                 <span id="chat-header-title"># room</span>
             </div>
             <div id="messages-box" class="messages-box"></div>
+            <div id="chat-image-progress" class="pow-progress">
+                <div class="pow-progress-label" id="chat-image-pow-label">Verifying...</div>
+                <div class="pow-progress-track"><div class="pow-progress-fill" id="chat-image-pow-fill"></div></div>
+            </div>
             <div class="chat-input-area">
                 <div class="chat-input-wrapper">
+                    <button id="attach-image-btn" type="button" aria-label="Attach image">&#128206;</button>
+                    <input type="file" id="attach-image-input" accept="image/*" style="display:none;">
                     <input type="text" id="message-input" class="chat-input" placeholder="Message">
                 </div>
             </div>

@@ -23,12 +23,24 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { POW_TTL_MS } from './config.js';
 
-export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history' | 'userKey';
+export type PowOp =
+  | 'register'
+  | 'createRoom'
+  | 'login'
+  | 'joinRoom'
+  | 'sendMessage'
+  | 'history'
+  | 'userKey'
+  | 'uploadImage'
+  | 'image';
 
 // Rough expected work at 16^d hashes. sendMessage/history/userKey are kept
 // low so interactive actions don't feel throttled - a solved challenge is
 // the only admission control on these endpoints; there is deliberately no
-// separate volume/rate cap (see README threat model).
+// separate volume/rate cap (see README threat model). uploadImage sits with
+// register/createRoom since it's a heavier, deliberate one-shot action
+// rather than a per-keystroke one; image (fetching a blob) is as cheap as
+// history since it happens once per rendered image.
 export const POW_DIFFICULTY: Record<PowOp, number> = {
   register: 5,
   createRoom: 5,
@@ -37,6 +49,8 @@ export const POW_DIFFICULTY: Record<PowOp, number> = {
   sendMessage: 3,
   history: 2,
   userKey: 2,
+  uploadImage: 4,
+  image: 2,
 };
 
 // Generated fresh at boot, in memory only, never persisted. A restart

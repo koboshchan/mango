@@ -4,7 +4,16 @@
 import { fetchAndSolvePow, type PowSolution } from '../crypto/pow.js';
 import { getSession } from '../store/vault.js';
 
-export type PowOp = 'register' | 'createRoom' | 'login' | 'joinRoom' | 'sendMessage' | 'history' | 'userKey';
+export type PowOp =
+  | 'register'
+  | 'createRoom'
+  | 'login'
+  | 'joinRoom'
+  | 'sendMessage'
+  | 'history'
+  | 'userKey'
+  | 'uploadImage'
+  | 'image';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -14,10 +23,15 @@ export class ApiError extends Error {
 
 export type ProgressCb = (attempts: number, estimatedTotal: number) => void;
 
-async function rawFetch<T>(path: string, init: RequestInit): Promise<T> {
+async function authHeader(): Promise<string | undefined> {
   const session = await getSession();
+  return session ? `Bearer ${session.token}` : undefined;
+}
+
+async function rawFetch<T>(path: string, init: RequestInit): Promise<T> {
   const headers = new Headers(init.headers);
-  if (session) headers.set('authorization', `Bearer ${session.token}`);
+  const bearer = await authHeader();
+  if (bearer) headers.set('authorization', bearer);
   if (init.body) headers.set('content-type', 'application/json');
 
   const res = await fetch(path, { ...init, headers });
@@ -115,8 +129,12 @@ export interface HistoryMessage {
   id: string;
   roomId: string;
   sender: string;
+  kind: 'text' | 'image';
   iv: string;
   ct: string;
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
   ts: number;
   sig: string;
   serverTs: number;
@@ -131,6 +149,53 @@ export function getHistory(
   const params: Record<string, string> = { limit: String(limit) };
   if (before !== undefined) params.before = String(before);
   return getWithPow(`/api/rooms/${encodeURIComponent(roomId)}/messages`, 'history', params, onProgress);
+}
+
+// --- Images ---
+//
+// Raw bytes in both directions, not JSON - these deliberately bypass
+// rawFetch (which always sets Content-Type: application/json whenever a
+// body is present, and always tries to parse the response as JSON) since
+// neither is true here.
+
+/** Uploads already-encrypted image bytes; returns the server-computed content-addressed id. */
+export async function uploadImage(
+  roomId: string,
+  bytes: Uint8Array,
+  onProgress?: ProgressCb,
+): Promise<{ imageId: string }> {
+  const pow = await fetchAndSolvePow('uploadImage', onProgress);
+  const qs = new URLSearchParams({ challenge: pow.challenge, nonce: pow.nonce });
+  const headers = new Headers({ 'content-type': 'application/octet-stream' });
+  const bearer = await authHeader();
+  if (bearer) headers.set('authorization', bearer);
+
+  const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}/images?${qs.toString()}`, {
+    method: 'POST',
+    headers,
+    body: bytes as BodyInit,
+  });
+  if (!res.ok) {
+    const body = res.headers.get('content-type')?.includes('application/json') ? await res.json() : undefined;
+    throw new ApiError(res.status, (body && body.error) || res.statusText);
+  }
+  return res.json() as Promise<{ imageId: string }>;
+}
+
+/** Fetches and returns an image's raw (still-encrypted) bytes. */
+export async function fetchImage(imageId: string, onProgress?: ProgressCb): Promise<Uint8Array> {
+  const pow = await fetchAndSolvePow('image', onProgress);
+  const qs = new URLSearchParams({ challenge: pow.challenge, nonce: pow.nonce });
+  const headers = new Headers();
+  const bearer = await authHeader();
+  if (bearer) headers.set('authorization', bearer);
+
+  const res = await fetch(`/api/images/${encodeURIComponent(imageId)}?${qs.toString()}`, { headers });
+  if (!res.ok) {
+    const body = res.headers.get('content-type')?.includes('application/json') ? await res.json() : undefined;
+    throw new ApiError(res.status, (body && body.error) || res.statusText);
+  }
+  return new Uint8Array(await res.arrayBuffer());
 }
 
 export type { PowSolution };

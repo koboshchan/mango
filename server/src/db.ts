@@ -31,11 +31,28 @@ export interface MessageDoc {
   _id: string;
   roomId: string;
   sender: string;
+  kind: 'text' | 'image';
   iv: string;
-  ct: string;
+  ct: string; // text: AES-GCM ciphertext (base64). image: the referenced ImageDoc's _id.
+  // Image-only, unsigned/cosmetic - never trusted for anything security-relevant (see messages.ts).
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
   ts: number; // client-claimed timestamp, signed
   sig: string; // base64 Ed25519 signature
   serverTs: number; // server-observed order/time, not signed
+}
+
+// An encrypted image blob, stored as real bytes (BSON Binary), not base64
+// text. _id = sha256(ciphertext bytes), computed server-side on upload (see
+// images.ts) - this content-addressing is what lets a MessageDoc's `ct`
+// field double as both the signed reference and the lookup key, with no
+// separate id generation or trust decision needed.
+export interface ImageDoc {
+  _id: string;
+  roomId: string;
+  data: Buffer;
+  createdAt: Date;
 }
 
 let client: MongoClient | null = null;
@@ -46,6 +63,7 @@ export interface Collections {
   rooms: Collection<RoomDoc>;
   memberships: Collection<MembershipDoc>;
   messages: Collection<MessageDoc>;
+  images: Collection<ImageDoc>;
 }
 
 let collections: Collections | null = null;
@@ -63,6 +81,7 @@ export async function connectDb(): Promise<Collections> {
     rooms: db.collection<RoomDoc>('rooms'),
     memberships: db.collection<MembershipDoc>('memberships'),
     messages: db.collection<MessageDoc>('messages'),
+    images: db.collection<ImageDoc>('images'),
   };
 
   await Promise.all([

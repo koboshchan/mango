@@ -9,8 +9,12 @@ export interface InboundMsgNew {
   id: string;
   roomId: string;
   sender: string;
+  kind: 'text' | 'image';
   iv: string;
   ct: string;
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
   ts: number;
   sig: string;
   serverTs: number;
@@ -149,8 +153,12 @@ export class ChatSocket {
 
   async sendMessage(input: {
     roomId: string;
+    kind: 'text' | 'image';
     iv: string;
     ct: string;
+    width?: number;
+    height?: number;
+    sizeBytes?: number;
     ts: number;
     sig: string;
     clientRef: string;

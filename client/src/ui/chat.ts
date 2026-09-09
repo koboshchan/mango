@@ -9,11 +9,19 @@
 //      pin, see store/vault.ts::checkAndPinPeer). A pin mismatch is treated
 //      as untrusted - the message is never decrypted, only flagged.
 //   2. Verify the signature over the exact canonical string the server
-//      checked (roomId|sender|ts|iv|ct). Anything that fails is rendered as
-//      a visibly invalid row and never decrypted.
-//   3. Only then AES-GCM-decrypt with the local room key (H1) and render
-//      via textContent - never innerHTML, which is what made the original
-//      index.html vulnerable to a stored-XSS via message text.
+//      checked (roomId|sender|ts|iv|ct|kind). Anything that fails is
+//      rendered as a visibly invalid row and never decrypted.
+//   3. Only then decrypt with the local room key (H1) and render - text via
+//      textContent (never innerHTML, which is what made the original
+//      index.html vulnerable to a stored-XSS via message text), images via
+//      an <img> whose src is an object URL we created ourselves from
+//      decrypted bytes, never a user-controlled string.
+//
+// A message is either text or an image (LoadedMessage.kind), sharing every
+// other guarantee: an image's `ct` is the sha256 of its (separately
+// fetched) ciphertext blob, so it's covered by the same signature as text -
+// see server/src/messages.ts for why that means no new crypto invariant is
+// needed for tamper-evidence.
 //
 // Message data vs. DOM are deliberately decoupled: `allMessages` holds
 // every message fetched for the currently open room (ascending by
@@ -25,12 +33,14 @@
 // far), and growing past the cap trims from whichever edge is furthest
 // from the viewport. This keeps a long-lived room from turning into an
 // ever-growing DOM while still letting the user page back through history.
-import { aesEncrypt, aesDecrypt, importAesKey, type EncBlob } from '../crypto/aes.js';
+import { aesEncrypt, aesDecrypt, aesEncryptBytes, aesDecryptBytes, importAesKey, type EncBlob } from '../crypto/aes.js';
 import { signMessage, verifyMessage, fingerprint, fingerprintFromRawB64 } from '../crypto/identity.js';
+import { prepareImage } from '../media/imagePrep.js';
 import * as api from '../net/rest.js';
 import type { InboundMsgNew, InboundError } from '../net/ws.js';
 import { checkAndPinPeer, listRoomsLocal, type StoredRoom } from '../store/vault.js';
 import { showRoomsScreen } from './screens.js';
+import { bindPowProgress } from './pow-progress.js';
 import { state } from '../state.js';
 
 function el<T extends HTMLElement>(id: string): T {
@@ -46,23 +56,46 @@ const MAX_RENDERED = 500;
 const TRIM_TO = 400;
 const SCROLL_TRIGGER_PX = 150;
 
+/** Result of resolveMessage(): signature verified, and for a valid message, decrypted. */
+type Resolved =
+  | { kind: 'text'; valid: boolean; text: string }
+  | { kind: 'image'; valid: boolean; imageUrl?: string; width: number; height: number; text?: string };
+
 interface LoadedMessage {
   id: string;
   roomId: string;
   sender: string;
+  kind: 'text' | 'image';
   iv: string;
-  ct: string;
+  ct: string; // text: AES-GCM ciphertext (base64). image: the referenced blob's id.
+  // Image-only, unsigned/cosmetic - a layout hint, never trusted for anything security-relevant.
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
   ts: number;
   sig: string;
   serverTs: number;
   /** Verified/decrypted exactly once, then cached here for as long as the message stays in memory. */
-  resolved?: { valid: boolean; text: string };
+  resolved?: Resolved;
   /** The rendered DOM row, kept so a later grouping change (see trimWindow) can toggle it without a full rebuild. */
   row?: HTMLElement;
 }
 
 function toLoadedMessage(m: api.HistoryMessage | InboundMsgNew): LoadedMessage {
-  return { id: m.id, roomId: m.roomId, sender: m.sender, iv: m.iv, ct: m.ct, ts: m.ts, sig: m.sig, serverTs: m.serverTs };
+  return {
+    id: m.id,
+    roomId: m.roomId,
+    sender: m.sender,
+    kind: m.kind,
+    iv: m.iv,
+    ct: m.ct,
+    width: m.width,
+    height: m.height,
+    sizeBytes: m.sizeBytes,
+    ts: m.ts,
+    sig: m.sig,
+    serverTs: m.serverTs,
+  };
 }
 
 export interface ChatController {
@@ -83,6 +116,9 @@ export function wireChatScreen(): ChatController {
   const sidebar = el<HTMLElement>('chat-sidebar');
   const sidebarBackdrop = el<HTMLElement>('sidebar-backdrop');
   const menuToggleBtn = el<HTMLButtonElement>('menu-toggle-btn');
+  const attachBtn = el<HTMLButtonElement>('attach-image-btn');
+  const attachInput = el<HTMLInputElement>('attach-image-input');
+  const imageProgress = bindPowProgress('chat-image-progress', 'chat-image-pow-label', 'chat-image-pow-fill');
 
   // Off-canvas sidebar drawer, only actually visible below the 768px
   // breakpoint (see index.html's @media block) - on desktop the sidebar is
@@ -154,35 +190,51 @@ export function wireChatScreen(): ChatController {
   }
 
   /** Verifies + decrypts a message exactly once; later calls return the cached result. */
-  async function resolveMessage(m: LoadedMessage): Promise<{ valid: boolean; text: string }> {
+  async function resolveMessage(m: LoadedMessage): Promise<Resolved> {
     if (m.resolved) return m.resolved;
 
-    const canonical = `${m.roomId}|${m.sender}|${m.ts}|${m.iv}|${m.ct}`;
+    const canonical = `${m.roomId}|${m.sender}|${m.ts}|${m.iv}|${m.ct}|${m.kind}`;
     const keyInfo = await getSignerKey(m.sender);
     const valid = !keyInfo.mismatch && (await verifyMessage(keyInfo.edPubB64, canonical, m.sig));
+    const width = m.width ?? 0;
+    const height = m.height ?? 0;
 
-    let text: string;
+    let resolved: Resolved;
     if (!valid) {
-      text = keyInfo.mismatch
+      const text = keyInfo.mismatch
         ? "[hidden: sender's signing key changed and is not yet re-verified]"
         : '[rejected: invalid signature]';
+      resolved = m.kind === 'image' ? { kind: 'image', valid: false, text, width, height } : { kind: 'text', valid: false, text };
+    } else if (m.kind === 'image') {
+      if (currentAesKey) {
+        try {
+          const ctBytes = await api.fetchImage(m.ct);
+          const bytes = await aesDecryptBytes(currentAesKey, m.iv, ctBytes);
+          const imageUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/jpeg' }));
+          resolved = { kind: 'image', valid: true, imageUrl, width, height };
+        } catch {
+          resolved = { kind: 'image', valid: true, text: '[failed to load image - wrong room key?]', width, height };
+        }
+      } else {
+        resolved = { kind: 'image', valid: true, width, height };
+      }
     } else if (currentAesKey) {
       try {
         const plaintext = await aesDecrypt(currentAesKey, { iv: m.iv, ct: m.ct } as EncBlob);
         const parsed = JSON.parse(plaintext) as { text: string; ts: number };
-        text = parsed.text;
+        resolved = { kind: 'text', valid: true, text: parsed.text };
       } catch {
-        text = '[failed to decrypt - wrong room key?]';
+        resolved = { kind: 'text', valid: true, text: '[failed to decrypt - wrong room key?]' };
       }
     } else {
-      text = '';
+      resolved = { kind: 'text', valid: true, text: '' };
     }
 
-    m.resolved = { valid, text };
-    return m.resolved;
+    m.resolved = resolved;
+    return resolved;
   }
 
-  function buildMessageRow(m: LoadedMessage, resolved: { valid: boolean; text: string }, grouped: boolean): HTMLElement {
+  function buildMessageRow(m: LoadedMessage, resolved: Resolved, grouped: boolean): HTMLElement {
     const row = document.createElement('div');
     row.className = 'message' + (resolved.valid ? '' : ' invalid-sig') + (grouped ? ' grouped' : '');
     row.dataset.id = m.id;
@@ -190,13 +242,22 @@ export function wireChatScreen(): ChatController {
     const userEl = document.createElement('div');
     userEl.className = 'message-user';
     userEl.textContent = m.sender; // textContent, not innerHTML - see file header
-
-    const textEl = document.createElement('div');
-    textEl.className = 'message-text';
-    textEl.textContent = resolved.text; // textContent, not innerHTML - see file header
-
     row.appendChild(userEl);
-    row.appendChild(textEl);
+
+    if (resolved.kind === 'image' && resolved.imageUrl) {
+      const img = document.createElement('img');
+      img.className = 'message-image';
+      img.src = resolved.imageUrl; // an object URL we created ourselves from decrypted bytes - see file header
+      img.width = resolved.width;
+      img.height = resolved.height;
+      row.appendChild(img);
+    } else {
+      const textEl = document.createElement('div');
+      textEl.className = 'message-text';
+      textEl.textContent = resolved.text ?? ''; // textContent, not innerHTML - see file header
+      row.appendChild(textEl);
+    }
+
     return row;
   }
 
@@ -438,17 +499,81 @@ export function wireChatScreen(): ChatController {
 
     const ts = Date.now();
     const { iv, ct } = await aesEncrypt(currentAesKey, JSON.stringify({ text, ts }));
-    const canonical = `${state.currentRoom.roomId}|${state.username}|${ts}|${iv}|${ct}`;
+    const kind = 'text' as const;
+    const canonical = `${state.currentRoom.roomId}|${state.username}|${ts}|${iv}|${ct}|${kind}`;
     const sig = await signMessage(state.identity.privateKey, canonical);
     const clientRef = crypto.randomUUID();
 
     messageInput.value = '';
     try {
-      await state.socket?.sendMessage({ roomId: state.currentRoom.roomId, iv, ct, ts, sig, clientRef });
+      await state.socket?.sendMessage({ roomId: state.currentRoom.roomId, kind, iv, ct, ts, sig, clientRef });
     } catch (err) {
       console.error('Failed to send message', err);
     }
   }
+
+  /** Resizes/compresses/encrypts an image client-side, uploads the ciphertext bytes, then sends a signed reference to it - mirrors handleSend()'s shape. */
+  async function handleImageFile(file: File): Promise<void> {
+    if (!state.currentRoom || !currentAesKey || !state.identity || !state.username) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Only image files can be attached.');
+      return;
+    }
+
+    imageProgress.show();
+    try {
+      const { bytes, width, height } = await prepareImage(file);
+      const { iv, ctBytes } = await aesEncryptBytes(currentAesKey, bytes);
+      const { imageId } = await api.uploadImage(state.currentRoom.roomId, ctBytes, imageProgress.onProgress);
+
+      const ts = Date.now();
+      const kind = 'image' as const;
+      const canonical = `${state.currentRoom.roomId}|${state.username}|${ts}|${iv}|${imageId}|${kind}`;
+      const sig = await signMessage(state.identity.privateKey, canonical);
+      const clientRef = crypto.randomUUID();
+
+      await state.socket?.sendMessage({
+        roomId: state.currentRoom.roomId,
+        kind,
+        iv,
+        ct: imageId,
+        width,
+        height,
+        sizeBytes: ctBytes.length,
+        ts,
+        sig,
+        clientRef,
+      });
+    } catch (err) {
+      console.error('Failed to send image', err);
+      alert(err instanceof Error ? err.message : 'Failed to send image.');
+    } finally {
+      imageProgress.hide();
+    }
+  }
+
+  attachBtn.addEventListener('click', () => attachInput.click());
+  attachInput.addEventListener('change', () => {
+    const file = attachInput.files?.[0];
+    attachInput.value = '';
+    if (file) void handleImageFile(file);
+  });
+
+  // Drag-and-drop onto the message list. HTML5 drag-and-drop doesn't exist
+  // on touch devices at all, which is why the attach button above is the
+  // primary path on mobile, not just a fallback.
+  messagesBox.addEventListener('dragover', (ev) => ev.preventDefault());
+  messagesBox.addEventListener('dragenter', (ev) => {
+    ev.preventDefault();
+    messagesBox.classList.add('drag-over');
+  });
+  messagesBox.addEventListener('dragleave', () => messagesBox.classList.remove('drag-over'));
+  messagesBox.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    messagesBox.classList.remove('drag-over');
+    const file = ev.dataTransfer?.files?.[0];
+    if (file) void handleImageFile(file);
+  });
 
   backBtn.addEventListener('click', () => {
     state.currentRoom = null;

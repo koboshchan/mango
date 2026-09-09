@@ -39,12 +39,17 @@ interface InboundFrame {
   type: string;
   token?: string;
   roomId?: string;
+  kind?: 'text' | 'image';
   iv?: string;
   ct?: string;
   ts?: number;
   sig?: string;
   clientRef?: string;
   pow?: PowSubmission;
+  // Image-only, unsigned/cosmetic - see messages.ts.
+  width?: number;
+  height?: number;
+  sizeBytes?: number;
 }
 
 async function handleAuth(ws: WebSocket, frame: InboundFrame): Promise<void> {
@@ -71,8 +76,8 @@ async function handleSubscribe(ws: WebSocket, state: ClientState, frame: Inbound
 }
 
 async function handleSend(ws: WebSocket, state: ClientState, frame: InboundFrame): Promise<void> {
-  const { roomId, iv, ct, ts, sig, clientRef } = frame;
-  if (!roomId || !iv || !ct || ts === undefined || !sig) {
+  const { roomId, kind, iv, ct, ts, sig, clientRef, width, height, sizeBytes } = frame;
+  if (!roomId || !kind || !iv || !ct || ts === undefined || !sig) {
     return sendError(ws, 'bad_request', 'Malformed message frame');
   }
 
@@ -84,7 +89,18 @@ async function handleSend(ws: WebSocket, state: ClientState, frame: InboundFrame
   }
 
   try {
-    const doc = await verifyAndPersistMessage({ roomId, sender: state.username, iv, ct, ts, sig });
+    const doc = await verifyAndPersistMessage({
+      roomId,
+      sender: state.username,
+      kind,
+      iv,
+      ct,
+      ts,
+      sig,
+      width,
+      height,
+      sizeBytes,
+    });
 
     const nextPow = issueChallenge('sendMessage');
     send(ws, { type: 'msg.ack', clientRef, id: doc._id, serverTs: doc.serverTs, powChallenge: nextPow });
@@ -94,8 +110,12 @@ async function handleSend(ws: WebSocket, state: ClientState, frame: InboundFrame
       id: doc._id,
       roomId: doc.roomId,
       sender: doc.sender,
+      kind: doc.kind,
       iv: doc.iv,
       ct: doc.ct,
+      width: doc.width,
+      height: doc.height,
+      sizeBytes: doc.sizeBytes,
       ts: doc.ts,
       sig: doc.sig,
       serverTs: doc.serverTs,
