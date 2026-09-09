@@ -57,6 +57,8 @@ interface LoadedMessage {
   serverTs: number;
   /** Verified/decrypted exactly once, then cached here for as long as the message stays in memory. */
   resolved?: { valid: boolean; text: string };
+  /** The rendered DOM row, kept so a later grouping change (see trimWindow) can toggle it without a full rebuild. */
+  row?: HTMLElement;
 }
 
 function toLoadedMessage(m: api.HistoryMessage | InboundMsgNew): LoadedMessage {
@@ -180,9 +182,9 @@ export function wireChatScreen(): ChatController {
     return m.resolved;
   }
 
-  function buildMessageRow(m: LoadedMessage, resolved: { valid: boolean; text: string }): HTMLElement {
+  function buildMessageRow(m: LoadedMessage, resolved: { valid: boolean; text: string }, grouped: boolean): HTMLElement {
     const row = document.createElement('div');
-    row.className = 'message' + (resolved.valid ? '' : ' invalid-sig');
+    row.className = 'message' + (resolved.valid ? '' : ' invalid-sig') + (grouped ? ' grouped' : '');
     row.dataset.id = m.id;
 
     const userEl = document.createElement('div');
@@ -204,11 +206,27 @@ export function wireChatScreen(): ChatController {
     await Promise.all([...senders].map((s) => getSignerKey(s)));
   }
 
-  async function buildFragment(msgs: LoadedMessage[]): Promise<DocumentFragment> {
+  /**
+   * True if allMessages[index] immediately follows a message from the same
+   * sender - i.e. it should render grouped (no repeated username). Always
+   * computed from the true neighbor in allMessages, not from what happens
+   * to be in the same rendered batch, so a batch that starts mid-run of one
+   * sender's messages (e.g. a page boundary) still groups correctly.
+   */
+  function isGroupedAt(index: number): boolean {
+    return index > 0 && allMessages[index]!.sender === allMessages[index - 1]!.sender;
+  }
+
+  /** Builds rows for `msgs`, a contiguous slice of allMessages starting at `startIndex`, and stores each row on its message for later grouping updates (see trimWindow). */
+  async function buildFragment(msgs: LoadedMessage[], startIndex: number): Promise<DocumentFragment> {
     await warmSignerKeys(msgs);
     const resolvedList = await Promise.all(msgs.map((m) => resolveMessage(m)));
     const frag = document.createDocumentFragment();
-    msgs.forEach((m, i) => frag.appendChild(buildMessageRow(m, resolvedList[i]!)));
+    msgs.forEach((m, i) => {
+      const row = buildMessageRow(m, resolvedList[i]!, isGroupedAt(startIndex + i));
+      m.row = row;
+      frag.appendChild(row);
+    });
     return frag;
   }
 
@@ -232,13 +250,30 @@ export function wireChatScreen(): ChatController {
       for (let i = 0; i < excess; i++) messagesBox.firstChild?.remove();
       windowStart += excess;
       messagesBox.scrollTop -= oldScrollHeight - messagesBox.scrollHeight;
+      // The new first rendered row may have been marked "grouped" (username
+      // hidden) because of a predecessor that's now trimmed away - without
+      // this it would render as an orphaned message with no visible sender.
+      allMessages[windowStart]?.row?.classList.remove('grouped');
     }
   }
 
-  /** Prepends a batch at the top of the DOM, keeping the visible content anchored (no visual jump). */
-  async function prependWithAnchor(msgs: LoadedMessage[]): Promise<void> {
+  /**
+   * Prepends a batch at the top of the DOM, keeping the visible content
+   * anchored (no visual jump). `startIndex` is where `msgs` sits in
+   * allMessages, i.e. the boundary message that was already rendered right
+   * after it - if that boundary message shares a sender with the last
+   * prepended message, it's retroactively marked grouped (it wasn't grouped
+   * before because its true predecessor hadn't been loaded yet).
+   */
+  async function prependWithAnchor(msgs: LoadedMessage[], startIndex: number): Promise<void> {
     if (msgs.length === 0) return;
-    const frag = await buildFragment(msgs);
+    const frag = await buildFragment(msgs, startIndex);
+
+    const boundary = allMessages[startIndex + msgs.length];
+    if (boundary && boundary.sender === msgs[msgs.length - 1]!.sender) {
+      boundary.row?.classList.add('grouped');
+    }
+
     const oldScrollHeight = messagesBox.scrollHeight;
     const oldScrollTop = messagesBox.scrollTop;
     messagesBox.insertBefore(frag, messagesBox.firstChild);
@@ -251,10 +286,12 @@ export function wireChatScreen(): ChatController {
     loadingOlder = true;
     try {
       let toPrepend: LoadedMessage[];
+      let startIndex: number;
 
       if (windowStart > 0) {
         const newStart = Math.max(0, windowStart - FETCH_LIMIT);
         toPrepend = allMessages.slice(newStart, windowStart);
+        startIndex = newStart;
         windowStart = newStart;
       } else {
         if (historyExhausted) return;
@@ -271,9 +308,10 @@ export function wireChatScreen(): ChatController {
         windowEnd += fresh.length;
         windowStart = 0;
         toPrepend = fresh;
+        startIndex = 0;
       }
 
-      await prependWithAnchor(toPrepend);
+      await prependWithAnchor(toPrepend, startIndex);
       trimWindow('top');
     } finally {
       loadingOlder = false;
@@ -284,13 +322,14 @@ export function wireChatScreen(): ChatController {
   function loadNewer(): void {
     if (loadingNewer || windowEnd >= allMessages.length) return;
     loadingNewer = true;
+    const startIndex = windowEnd;
     const newEnd = Math.min(allMessages.length, windowEnd + FETCH_LIMIT);
     const toAppend = allMessages.slice(windowEnd, newEnd);
     windowEnd = newEnd;
 
     void (async () => {
       try {
-        const frag = await buildFragment(toAppend);
+        const frag = await buildFragment(toAppend, startIndex);
         messagesBox.appendChild(frag);
         trimWindow('bottom');
       } finally {
@@ -341,7 +380,7 @@ export function wireChatScreen(): ChatController {
       windowStart = 0;
       windowEnd = allMessages.length;
 
-      const frag = await buildFragment(allMessages);
+      const frag = await buildFragment(allMessages, 0);
       messagesBox.appendChild(frag);
       messagesBox.scrollTop = messagesBox.scrollHeight;
     } catch (err) {
@@ -358,13 +397,14 @@ export function wireChatScreen(): ChatController {
     const nearBottom =
       messagesBox.scrollHeight - messagesBox.scrollTop - messagesBox.clientHeight < SCROLL_TRIGGER_PX;
 
+    const startIndex = allMessages.length;
     const loaded = toLoadedMessage(m);
     allMessages.push(loaded);
     if (!wasAtNewestEnd) return; // user has scrolled away from "now" - keep the data, leave the DOM alone
 
     windowEnd = allMessages.length;
     void (async () => {
-      const frag = await buildFragment([loaded]);
+      const frag = await buildFragment([loaded], startIndex);
       messagesBox.appendChild(frag);
       trimWindow('bottom');
       if (nearBottom) messagesBox.scrollTop = messagesBox.scrollHeight;

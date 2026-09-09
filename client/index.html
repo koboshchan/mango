@@ -96,6 +96,10 @@
         .message.invalid-sig .message-text { color: var(--danger); font-style: italic; }
         .message.invalid-sig .message-user::after { content: " (INVALID SIGNATURE)"; color: var(--danger); font-weight: normal; font-size: 0.75rem; }
         .message.pending .message-text { opacity: 0.6; }
+        /* Consecutive messages from the same sender are grouped: no repeated
+           username, tighter spacing than the default .messages-box gap. */
+        .message.grouped { margin-top: -9px; }
+        .message.grouped .message-user { display: none; }
 
         .chat-input-area { padding: 20px; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
         .chat-input-wrapper { background: var(--bg-input); border-radius: 8px; padding: 10px; display: flex; }
