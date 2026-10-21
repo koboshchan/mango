@@ -7,7 +7,7 @@
 # server/ need to be reachable from a single build.
 
 # ---- Stage 1: build the static client bundle ----
-FROM node:22-alpine AS client-builder
+FROM node:24.22.1-alpine AS client-builder
 WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci
@@ -16,7 +16,7 @@ RUN npm run build
 # Produces client/dist/{index.html,bundle.js,bundle.js.map}
 
 # ---- Stage 2: bundle the server into a single CJS file ----
-FROM node:22-alpine AS server-builder
+FROM node:24.22.1-alpine AS server-builder
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json ./
 RUN npm ci
@@ -33,7 +33,7 @@ COPY server/ ./
 RUN npx esbuild src/index.ts \
     --bundle \
     --platform=node \
-    --target=node22 \
+    --target=node24 \
     --format=cjs \
     --outfile=dist/server.cjs \
     --external:kerberos \
@@ -48,7 +48,7 @@ RUN npx esbuild src/index.ts \
     --external:utf-8-validate
 
 # ---- Stage 3: runtime image - no source, no node_modules ----
-FROM node:22-alpine AS runner
+FROM node:24.22.1-alpine AS runner
 WORKDIR /app
 
 COPY --from=server-builder /app/server/dist/server.cjs ./server.cjs

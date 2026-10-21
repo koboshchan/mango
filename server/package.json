@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/server.cjs --external:kerberos --external:snappy --external:@mongodb-js/zstd --external:aws4 --external:socks --external:@aws-sdk/credential-providers --external:gcp-metadata --external:mongodb-client-encryption --external:bufferutil --external:utf-8-validate",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/server.cjs --external:kerberos --external:snappy --external:@mongodb-js/zstd --external:aws4 --external:socks --external:@aws-sdk/credential-providers --external:gcp-metadata --external:mongodb-client-encryption --external:bufferutil --external:utf-8-validate",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit"
@@ -22,5 +22,8 @@
     "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=24.22.1 <25"
   }
 }
